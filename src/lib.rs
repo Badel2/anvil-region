@@ -925,7 +925,7 @@ mod tests {
 
         region.write_chunk(15, 15, write_compound_tag_2).unwrap();
 
-        assert_eq!(region.used_sectors.clone().into_vec()[0], 0b11011100);
+        assert_eq!(region.used_sectors.clone().into_vec()[0], 0b00111011);
         assert_eq!(region.used_sectors.len(), 6);
         assert_eq!(
             file.as_file().metadata().unwrap().len(),
@@ -939,7 +939,7 @@ mod tests {
         let used_sectors = anvil_region::used_sectors(8, &empty_chunks_metadata);
 
         // Two sectors are used for header data.
-        assert_eq!(used_sectors.into_vec()[0], 0b11000000);
+        assert_eq!(used_sectors.into_vec()[0], 0b00000011);
     }
 
     #[test]
@@ -960,8 +960,7 @@ mod tests {
         let used_sectors = anvil_region::used_sectors(10, &chunks_metadata);
         let used_vec = used_sectors.into_vec();
 
-        assert_eq!(used_vec[0], 0b11011100);
-        assert_eq!(used_vec[1], 0b10000000);
+        assert_eq!(used_vec[0], 0b100111011);
     }
 
     #[test]
