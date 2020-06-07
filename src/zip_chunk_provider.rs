@@ -124,22 +124,12 @@ impl<R: Read + Seek> ZipChunkProvider<R> {
         format!("{}r.{}.{}.mca", self.region_prefix, region_x, region_z)
     }
 
-    pub fn load_chunk(
+    fn load_region_into_cache(
         &mut self,
-        chunk_x: i32,
-        chunk_z: i32,
-    ) -> Result<CompoundTag, ChunkLoadError> {
-        let RegionAndOffset {
-            region_x,
-            region_z,
-            region_chunk_x,
-            region_chunk_z,
-        } = RegionAndOffset::from_chunk(chunk_x, chunk_z);
-
-        let mut buf;
-        let buf = if let Some(buf) = self.cache.get_mut(&(region_x, region_z)) {
-            buf
-        } else {
+        region_x: i32,
+        region_z: i32,
+    ) -> Result<(), ChunkLoadError> {
+        if !self.cache.contains_key(&(region_x, region_z)) {
             let region_path = self.region_path(region_x, region_z);
 
             let mut region_file = match self.zip_archive.by_name(&region_path) {
@@ -152,14 +142,27 @@ impl<R: Read + Seek> ZipChunkProvider<R> {
             };
 
             let uncompressed_size = region_file.size();
-            buf = Vec::with_capacity(uncompressed_size as usize);
+            let mut buf = Vec::with_capacity(uncompressed_size as usize);
             region_file.read_to_end(&mut buf)?;
 
             // Insert into cache
             self.cache.insert((region_x, region_z), buf.clone());
-
-            &mut buf
         };
+
+        Ok(())
+    }
+
+    pub fn load_chunk(
+        &mut self,
+        chunk_x: i32,
+        chunk_z: i32,
+    ) -> Result<CompoundTag, ChunkLoadError> {
+        let RegionAndOffset {
+            region_x,
+            region_z,
+            region_chunk_x,
+            region_chunk_z,
+        } = RegionAndOffset::from_chunk(chunk_x, chunk_z);
 
         // Warning: the zip archive will not be updated with any writes!
         // Any writes made by AnvilRegion will only affect the in-memory cache
@@ -167,6 +170,9 @@ impl<R: Read + Seek> ZipChunkProvider<R> {
         // But ZipArchive only provides Read access to the compressed files
         // So we uncompress the file into memory, and pass the in-memory buffer
         // to AnvilRegion
+        self.load_region_into_cache(region_x, region_z)?;
+
+        let buf = self.cache.get_mut(&(region_x, region_z)).unwrap();
         let mut region = AnvilRegion::new(Cursor::new(buf))?;
 
         region.read_chunk(region_chunk_x, region_chunk_z)
@@ -184,13 +190,20 @@ impl<R: Read + Seek> ZipChunkProvider<R> {
     pub fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
         let regions = find_all_region_mca(&mut self.zip_archive, &self.region_prefix);
         let mut c = vec![];
-        for r in regions {
+        for (region_x, region_z) in regions {
+            self.load_region_into_cache(region_x, region_z)?;
+
+            let buf = self.cache.get_mut(&(region_x, region_z)).unwrap();
+            let region = AnvilRegion::new(Cursor::new(buf))?;
+
             // Insert all the non-empty chunks from this region
-            for x in 0..32 {
-                for z in 0..32 {
-                    let (chunk_x, chunk_z) = ((r.0 << 5) | x, (r.1 << 5) | z);
-                    // TODO: only ingnore "chunk not found" errors
-                    if self.load_chunk(chunk_x, chunk_z).is_ok() {
+            for region_chunk_z in 0..32 {
+                for region_chunk_x in 0..32 {
+                    let metadata = region.get_metadata(region_chunk_x, region_chunk_z);
+
+                    if !metadata.is_empty() {
+                        let chunk_x = (region_x * 32) + i32::from(region_chunk_x);
+                        let chunk_z = (region_z * 32) + i32::from(region_chunk_z);
                         c.push((chunk_x, chunk_z));
                     }
                 }

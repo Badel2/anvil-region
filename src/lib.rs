@@ -306,13 +306,21 @@ impl<'a> FolderChunkProvider<'a> {
             ChunkLoadError::ReadError { io_error }
         })?;
         let mut c = vec![];
-        for r in regions {
+        for (region_x, region_z) in regions {
+            let region_name = Self::region_name(region_x, region_z);
+            let region_path = self.folder_path.join(region_name);
+
+            // TODO: Cache region files.
+            let region = AnvilRegion::file(region_path)?;
+
             // Insert all the non-empty chunks from this region
-            for x in 0..32 {
-                for z in 0..32 {
-                    let (chunk_x, chunk_z) = ((r.0 << 5) | x, (r.1 << 5) | z);
-                    // TODO: only ingnore "chunk not found" errors
-                    if self.load_chunk(chunk_x, chunk_z).is_ok() {
+            for region_chunk_z in 0..32 {
+                for region_chunk_x in 0..32 {
+                    let metadata = region.get_metadata(region_chunk_x, region_chunk_z);
+
+                    if !metadata.is_empty() {
+                        let chunk_x = (region_x * 32) + i32::from(region_chunk_x);
+                        let chunk_z = (region_z * 32) + i32::from(region_chunk_z);
                         c.push((chunk_x, chunk_z));
                     }
                 }
@@ -835,11 +843,6 @@ mod tests {
 
     #[test]
     fn test_list_chunks_in_folder() {
-        // TODO: this test is slow
-        // Possible reasons:
-        // * because it is trying to read 277 chunks
-        //   (and we only want to check if they exist)
-        // * because region files are not cached
         let mut chunk_provider = FolderChunkProvider::new("test/region");
         let x = chunk_provider.list_chunks().unwrap();
 
