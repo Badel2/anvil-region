@@ -1,4 +1,5 @@
 use crate::{AnvilChunkProvider, AnvilRegion, ChunkLoadError, ChunkSaveError, RegionAndOffset};
+use crate::parse_region_file_name;
 use nbt::CompoundTag;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -81,6 +82,31 @@ fn find_region_folder_path<R: Read + Seek>(
     Ok(region_prefix)
 }
 
+fn find_all_region_mca<R: Read + Seek>(
+    zip_archive: &mut ZipArchive<R>,
+    region_prefix: &str,
+) -> Vec<(i32, i32)> {
+    let mut r = vec![];
+    for i in 0..zip_archive.len() {
+        // This unwrap is safe because we are iterating from 0 to len
+        let file = zip_archive.by_index(i).unwrap();
+        let full_path = file.sanitized_name();
+        let folder_name = full_path.parent();
+        if folder_name != Some(Path::new(region_prefix)) {
+            continue;
+        }
+        let mca_name = full_path.file_name().and_then(|x| x.to_str());
+        if mca_name.is_none() {
+            continue;
+        }
+        if let Some(coords) = parse_region_file_name(&mca_name.unwrap()) {
+            r.push(coords);
+        }
+    }
+
+    r
+}
+
 impl<R: Read + Seek> ZipChunkProvider<R> {
     pub fn new(reader: R) -> Result<Self, ZipProviderError> {
         let mut zip_archive = ZipArchive::new(reader)?;
@@ -154,6 +180,25 @@ impl<R: Read + Seek> ZipChunkProvider<R> {
     ) -> Result<(), ChunkSaveError> {
         panic!("Writing to ZIP archives is not supported");
     }
+
+    pub fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
+        let regions = find_all_region_mca(&mut self.zip_archive, &self.region_prefix);
+        let mut c = vec![];
+        for r in regions {
+            // Insert all the non-empty chunks from this region
+            for x in 0..32 {
+                for z in 0..32 {
+                    let (chunk_x, chunk_z) = ((r.0 << 5) | x, (r.1 << 5) | z);
+                    // TODO: only ingnore "chunk not found" errors
+                    if self.load_chunk(chunk_x, chunk_z).is_ok() {
+                        c.push((chunk_x, chunk_z));
+                    }
+                }
+            }
+        }
+
+        Ok(c)
+    }
 }
 
 impl ZipChunkProvider<File> {
@@ -179,6 +224,9 @@ impl<R: Read + Seek> AnvilChunkProvider for ZipChunkProvider<R> {
         chunk_compound_tag: CompoundTag,
     ) -> Result<(), ChunkSaveError> {
         self.save_chunk(chunk_x, chunk_z, chunk_compound_tag)
+    }
+    fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
+        self.list_chunks()
     }
 }
 

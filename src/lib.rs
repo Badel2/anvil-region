@@ -54,6 +54,8 @@ pub mod zip_chunk_provider;
 #[cfg(feature = "zip")]
 pub use zip_chunk_provider::*;
 
+mod strict_parse_int;
+
 /// Amount of chunks in region.
 const REGION_CHUNKS: usize = 1024;
 /// Length of chunks metadata in region.
@@ -176,6 +178,7 @@ pub trait AnvilChunkProvider {
         chunk_z: i32,
         chunk_compound_tag: CompoundTag,
     ) -> Result<(), ChunkSaveError>;
+    fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError>;
 }
 
 /// The chunks are saved in a folder (the default)
@@ -277,6 +280,47 @@ impl<'a> FolderChunkProvider<'a> {
 
         region.write_chunk(region_chunk_x, region_chunk_z, chunk_compound_tag)
     }
+
+    // Find all the region files in the current folder
+    fn find_all_region_mca(&self) -> Result<Vec<(i32, i32)>, std::io::Error> {
+        let mut r = vec![];
+
+        for entry in std::fs::read_dir(self.folder_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let filename = path.file_name().and_then(|x| x.to_str());
+            if filename.is_none() {
+                continue;
+            }
+
+            if let Some(coords) = parse_region_file_name(&filename.unwrap()) {
+                r.push(coords);
+            }
+        }
+
+        Ok(r)
+    }
+
+    pub fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
+        let regions = self.find_all_region_mca().map_err(|io_error| {
+            ChunkLoadError::ReadError { io_error }
+        })?;
+        let mut c = vec![];
+        for r in regions {
+            // Insert all the non-empty chunks from this region
+            for x in 0..32 {
+                for z in 0..32 {
+                    let (chunk_x, chunk_z) = ((r.0 << 5) | x, (r.1 << 5) | z);
+                    // TODO: only ingnore "chunk not found" errors
+                    if self.load_chunk(chunk_x, chunk_z).is_ok() {
+                        c.push((chunk_x, chunk_z));
+                    }
+                }
+            }
+        }
+
+        Ok(c)
+    }
 }
 
 impl<'a> AnvilChunkProvider for FolderChunkProvider<'a> {
@@ -290,6 +334,9 @@ impl<'a> AnvilChunkProvider for FolderChunkProvider<'a> {
         chunk_compound_tag: CompoundTag,
     ) -> Result<(), ChunkSaveError> {
         FolderChunkProvider::save_chunk(self, chunk_x, chunk_z, chunk_compound_tag)
+    }
+    fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
+        FolderChunkProvider::list_chunks(self)
     }
 }
 
@@ -632,6 +679,26 @@ impl<F: Seek + Read + Write> AnvilRegion<F> {
     }
 }
 
+/// Parse "r.1.2.mca" into (1, 2)
+pub fn parse_region_file_name(s: &str) -> Option<(i32, i32)> {
+    let mut iter = s.as_bytes().split(|x| *x == b'.');
+    if iter.next() != Some(b"r") {
+        return None;
+    }
+    let x = strict_parse_int::strict_parse_i32(iter.next()?)?;
+    let z = strict_parse_int::strict_parse_i32(iter.next()?)?;
+    if iter.next() != Some(b"mca") {
+        return None;
+    }
+
+    if iter.next() != None {
+        // Trailing dots
+        return None;
+    }
+
+    Some((x, z))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,6 +831,19 @@ mod tests {
             }
             _ => panic!("Expected `ChunkNotFound` but got `{:?}", load_error),
         }
+    }
+
+    #[test]
+    fn test_list_chunks_in_folder() {
+        // TODO: this test is slow
+        // Possible reasons:
+        // * because it is trying to read 277 chunks
+        //   (and we only want to check if they exist)
+        // * because region files are not cached
+        let mut chunk_provider = FolderChunkProvider::new("test/region");
+        let x = chunk_provider.list_chunks().unwrap();
+
+        assert_eq!(x.len(), 277);
     }
 
     #[test]
@@ -1019,5 +1099,42 @@ mod tests {
                 region_chunk_z: 2,
             }
         );
+    }
+
+    #[test]
+    fn test_parse_region_file_name() {
+        // Valid examples
+        assert_eq!(parse_region_file_name("r.0.0.mca"), Some((0, 0)));
+        assert_eq!(parse_region_file_name("r.1.2.mca"), Some((1, 2)));
+        assert_eq!(parse_region_file_name("r.1.-2.mca"), Some((1, -2)));
+        assert_eq!(parse_region_file_name("r.-2.1.mca"), Some((-2, 1)));
+        assert_eq!(parse_region_file_name("r.-1.-2.mca"), Some((-1, -2)));
+        assert_eq!(parse_region_file_name("r.2147483647.2147483647.mca"), Some((i32::MAX, i32::MAX)));
+        assert_eq!(parse_region_file_name("r.-2147483648.-2147483648.mca"), Some((i32::MIN, i32::MIN)));
+
+        // Invalid examples
+        // Extra dots
+        assert_eq!(parse_region_file_name(".r.0.0.mca"), None);
+        assert_eq!(parse_region_file_name("r..0.0.mca"), None);
+        assert_eq!(parse_region_file_name("r.0..0.mca"), None);
+        assert_eq!(parse_region_file_name("r.0.0..mca"), None);
+        assert_eq!(parse_region_file_name("r.0.0.m.ca"), None);
+        assert_eq!(parse_region_file_name("r.0.0.mc.a"), None);
+        assert_eq!(parse_region_file_name("r.0.0.mca."), None);
+        // Whitespace is always invalid
+        assert_eq!(parse_region_file_name(" r.0.0.mca"), None);
+        assert_eq!(parse_region_file_name("r .0.0.mca"), None);
+        assert_eq!(parse_region_file_name("r. 0.0.mca"), None);
+        assert_eq!(parse_region_file_name("r.0 .0.mca"), None);
+        assert_eq!(parse_region_file_name("r.0. 0.mca"), None);
+        assert_eq!(parse_region_file_name("r.0.0 .mca"), None);
+        assert_eq!(parse_region_file_name("r.0.0. mca"), None);
+        assert_eq!(parse_region_file_name("r.0.0.m ca"), None);
+        assert_eq!(parse_region_file_name("r.0.0.mc a"), None);
+        assert_eq!(parse_region_file_name("r.0.0.mca "), None);
+        // Trailing data
+        assert_eq!(parse_region_file_name("r.0.0.mca~"), None);
+        assert_eq!(parse_region_file_name("r.0.0.mca_backup"), None);
+        assert_eq!(parse_region_file_name("r.0.0.mca.backup"), None);
     }
 }
