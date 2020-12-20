@@ -1,4 +1,4 @@
-use crate::{AnvilChunkProvider, AnvilRegion, ChunkLoadError, ChunkSaveError, RegionAndOffset};
+use crate::{AnvilChunkProvider, AnvilRegion, ChunkLoadError, ChunkSaveError, RegionAndOffset, ReadAndSeek};
 use crate::parse_region_file_name;
 use nbt::CompoundTag;
 use std::collections::HashMap;
@@ -227,6 +227,15 @@ impl ZipChunkProvider<File> {
 }
 
 impl<R: Read + Seek> AnvilChunkProvider for ZipChunkProvider<R> {
+    fn get_region(&mut self, region_x: i32, region_z: i32) -> Result<Box<dyn ReadAndSeek + '_>, ChunkLoadError> {
+		self.load_region_into_cache(region_x, region_z)?;
+
+		if let Some(bytes) = self.cache.get(&(region_x, region_z)) {
+			Ok(Box::new(Cursor::new(bytes)))
+		} else {
+			Err(ChunkLoadError::RegionNotFound { region_x, region_z })
+		}
+    }
     fn load_chunk(&mut self, chunk_x: i32, chunk_z: i32) -> Result<CompoundTag, ChunkLoadError> {
         self.load_chunk(chunk_x, chunk_z)
     }
@@ -241,6 +250,11 @@ impl<R: Read + Seek> AnvilChunkProvider for ZipChunkProvider<R> {
     fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
         self.list_chunks()
     }
+    fn list_regions(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
+        let regions = find_all_region_mca(&mut self.zip_archive, &self.region_prefix);
+        Ok(regions)
+    }
+
 }
 
 #[cfg(test)]

@@ -170,7 +170,11 @@ impl RegionAndOffset {
     }
 }
 
+pub trait ReadAndSeek: Read + Seek {}
+impl<T: Read + Seek> ReadAndSeek for T {}
+
 pub trait AnvilChunkProvider {
+    fn get_region(&mut self, region_x: i32, region_z: i32) -> Result<Box<dyn ReadAndSeek + '_>, ChunkLoadError>;
     fn load_chunk(&mut self, chunk_x: i32, chunk_z: i32) -> Result<CompoundTag, ChunkLoadError>;
     fn save_chunk(
         &mut self,
@@ -179,6 +183,7 @@ pub trait AnvilChunkProvider {
         chunk_compound_tag: CompoundTag,
     ) -> Result<(), ChunkSaveError>;
     fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError>;
+    fn list_regions(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError>;
 }
 
 /// The chunks are saved in a folder (the default)
@@ -332,6 +337,17 @@ impl<'a> FolderChunkProvider<'a> {
 }
 
 impl<'a> AnvilChunkProvider for FolderChunkProvider<'a> {
+    fn get_region(&mut self, region_x: i32, region_z: i32) -> Result<Box<dyn ReadAndSeek + '_>, ChunkLoadError> {
+        let region_name = Self::region_name(region_x, region_z);
+        let region_path = self.folder_path.join(region_name);
+        let file = OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create(true)
+            .open(region_path)?;
+
+        Ok(Box::new(file))
+    }
     fn load_chunk(&mut self, chunk_x: i32, chunk_z: i32) -> Result<CompoundTag, ChunkLoadError> {
         FolderChunkProvider::load_chunk(self, chunk_x, chunk_z)
     }
@@ -345,6 +361,11 @@ impl<'a> AnvilChunkProvider for FolderChunkProvider<'a> {
     }
     fn list_chunks(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
         FolderChunkProvider::list_chunks(self)
+    }
+    fn list_regions(&mut self) -> Result<Vec<(i32, i32)>, ChunkLoadError> {
+        self.find_all_region_mca().map_err(|io_error| {
+            ChunkLoadError::ReadError { io_error }
+        })
     }
 }
 
