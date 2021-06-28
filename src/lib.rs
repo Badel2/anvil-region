@@ -572,7 +572,7 @@ impl<F: Seek + Read + Write> AnvilRegion<F> {
         let mut buffer = Vec::new();
 
         buffer.write_u8(ZLIB_COMPRESSION_TYPE)?;
-        write_zlib_compound_tag(&mut buffer, chunk_compound_tag)?;
+        write_zlib_compound_tag(&mut buffer, &chunk_compound_tag)?;
 
         // 4 bytes for data length.
         let length = (buffer.len() + 4) as u32;
