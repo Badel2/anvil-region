@@ -2,6 +2,7 @@ use crate::{AnvilChunkProvider, AnvilRegion, ChunkLoadError, ChunkSaveError, Reg
 use crate::parse_region_file_name;
 use nbt::CompoundTag;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{Cursor, Read, Seek};
@@ -52,13 +53,13 @@ fn find_region_folder_path<R: Read + Seek>(
 ) -> Result<String, ZipProviderError> {
     let mut region_prefix = String::from("/");
     let mut found_region_count = 0;
-    for i in 0..zip_archive.len() {
-        // This unwrap is safe because we are iterating from 0 to len
-        let file = zip_archive.by_index(i).unwrap();
-        let full_path = file.sanitized_name();
+    for unsanitized_full_path in zip_archive.file_names() {
+        // full_path may contain invalid directory names such as "../../../etc/passwd", but we will
+        // not decompress this file so we don't care
+        let full_path = Path::new(&unsanitized_full_path);
         // file_name() returns None when the path ends with "/.."
-        // we handle that case as an empty string
-        let folder_name = full_path.file_name().unwrap_or_default();
+        // we handle that case by returning a ".." filename
+        let folder_name = full_path.file_name().unwrap_or(OsStr::new(".."));
         if folder_name == "region" {
             if let Some(parent) = full_path.parent() {
                 let parent_file_name = parent.file_name().unwrap_or_default();
@@ -77,7 +78,8 @@ fn find_region_folder_path<R: Read + Seek>(
                 }
             }
             found_region_count += 1;
-            region_prefix = file.name().to_string();
+            //region_prefix = full_path.parent().and_then(|p| p.to_str()).map(|p| p.to_string()).unwrap_or_else(|| "/".to_string());
+            region_prefix = full_path.to_str().map(|p| p.to_string()).unwrap_or_else(|| "/".to_string());
             // Keep searching after finding the first folder, to make sure
             // there is only one region/ folder
         }
@@ -97,12 +99,12 @@ fn find_all_region_mca<R: Read + Seek>(
     region_prefix: &str,
 ) -> Vec<(i32, i32)> {
     let mut r = vec![];
-    for i in 0..zip_archive.len() {
-        // This unwrap is safe because we are iterating from 0 to len
-        let file = zip_archive.by_index(i).unwrap();
-        let full_path = file.sanitized_name();
-        let folder_name = full_path.parent();
-        if folder_name != Some(Path::new(region_prefix)) {
+    for unsanitized_full_path in zip_archive.file_names() {
+        // full_path may contain invalid directory names such as "../../../etc/passwd", but we will
+        // not decompress this file so we don't care
+        let full_path = Path::new(&unsanitized_full_path);
+        let folder_name = full_path.parent().unwrap_or_else(|| Path::new("/"));
+        if folder_name != Path::new(region_prefix) {
             continue;
         }
         let mca_name = full_path.file_name().and_then(|x| x.to_str());
