@@ -48,6 +48,7 @@ impl From<ZipError> for ZipProviderError {
 // Panics if more than one folder is found
 fn find_region_folder_path<R: Read + Seek>(
     zip_archive: &mut ZipArchive<R>,
+    dimension: Option<&str>,
 ) -> Result<String, ZipProviderError> {
     let mut region_prefix = String::from("/");
     let mut found_region_count = 0;
@@ -61,9 +62,18 @@ fn find_region_folder_path<R: Read + Seek>(
         if folder_name == "region" {
             if let Some(parent) = full_path.parent() {
                 let parent_file_name = parent.file_name().unwrap_or_default();
-                if parent_file_name == "DIM1" || parent_file_name == "DIM-1" {
-                    // Skip nether and end regions
-                    continue;
+                match dimension {
+                    Some(dimension) => {
+                        if parent_file_name != dimension {
+                            continue;
+                        }
+                    }
+                    None => {
+                        if parent_file_name.to_str().unwrap_or_default().starts_with("DIM") {
+                            // Skip nether and end regions
+                            continue;
+                        }
+                    }
                 }
             }
             found_region_count += 1;
@@ -109,8 +119,12 @@ fn find_all_region_mca<R: Read + Seek>(
 
 impl<R: Read + Seek> ZipChunkProvider<R> {
     pub fn new(reader: R) -> Result<Self, ZipProviderError> {
+        Self::new_with_dimension(reader, None)
+    }
+
+    pub fn new_with_dimension(reader: R, dimension: Option<&str>) -> Result<Self, ZipProviderError> {
         let mut zip_archive = ZipArchive::new(reader)?;
-        let region_prefix = find_region_folder_path(&mut zip_archive)?;
+        let region_prefix = find_region_folder_path(&mut zip_archive, dimension)?;
         let cache = HashMap::new();
 
         Ok(ZipChunkProvider {
